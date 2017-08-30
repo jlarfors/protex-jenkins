@@ -21,7 +21,7 @@
  *******************************************************************************/
 package com.blackducksoftware.integration.protex.jenkins;
 
-import hudson.model.BuildListener;
+import hudson.model.TaskListener;
 
 import java.io.PrintWriter;
 import java.io.Serializable;
@@ -32,15 +32,15 @@ import com.blackducksoftware.integration.suite.sdk.logging.LogLevel;
 
 public class ProtexJenkinsLogger implements IntLogger, Serializable {
 
-    private final BuildListener jenkinsLogger;
+    private final TaskListener jenkinsLogger;
 
     private LogLevel level = LogLevel.INFO; // default is INFO
 
-    public ProtexJenkinsLogger(BuildListener jenkinsLogger) {
+    public ProtexJenkinsLogger(TaskListener jenkinsLogger) {
         this.jenkinsLogger = jenkinsLogger;
     }
 
-    public BuildListener getJenkinsListener() {
+    public TaskListener getJenkinsListener() {
         return jenkinsLogger;
     }
 

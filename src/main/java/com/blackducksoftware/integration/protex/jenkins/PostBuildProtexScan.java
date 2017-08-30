@@ -87,13 +87,16 @@ import hudson.model.AbstractProject;
 import hudson.model.BuildListener;
 import hudson.model.JDK;
 import hudson.model.Result;
+import hudson.model.Run;
+import hudson.model.TaskListener;
 import hudson.remoting.VirtualChannel;
 import hudson.security.ACL;
 import hudson.tasks.BuildStepMonitor;
 import hudson.tasks.Recorder;
 import jenkins.model.Jenkins;
+import jenkins.tasks.SimpleBuildStep;
 
-public class PostBuildProtexScan extends Recorder {
+public class PostBuildProtexScan extends Recorder implements SimpleBuildStep {
 
 	// Init Variables for Protex Plugin
 	private final String protexServerId;
@@ -216,8 +219,8 @@ public class PostBuildProtexScan extends Recorder {
 	 *
 	 */
 	@Override
-	public boolean perform(final AbstractBuild<?, ?> build, final Launcher launcher,
-			final BuildListener listener) throws IOException, InterruptedException {
+	public void perform(Run<?, ?> build, FilePath workspace, Launcher launcher,
+			TaskListener listener) throws IOException, InterruptedException {
 		setResult(build.getResult());
 		final ProtexJenkinsLogger logger = new ProtexJenkinsLogger(listener);
 		logger.setLogLevel(LogLevel.DEBUG); // TODO make the log level configurable
@@ -239,13 +242,13 @@ public class PostBuildProtexScan extends Recorder {
 					if (getProtexScanMemory() < 2) {
 						logger.error("Did not provide enough memory for the Protex Scan : " + getProtexScanMemory() + " GB");
 						build.setResult(Result.UNSTABLE);
-						return true;
+						return;
 					}
 					final ProtexServerInfo currentServer = getProtexServerInfo(getProtexServerId());
 					if (currentServer == null) {
 						logger.error("Can not find the defined Protex Server with the Id : " + protexServerId);
 						build.setResult(Result.UNSTABLE);
-						return true;
+						return;
 					}
 					ProtexFacade facade = null;
 					try {
@@ -253,14 +256,14 @@ public class PostBuildProtexScan extends Recorder {
 						if (facade == null) {
 							logger.error("There was a problem creating the ProtexFacade");
 							build.setResult(Result.UNSTABLE);
-							return true;
+							return;
 						}
 					} catch (final Exception e1) {
 						// Catch all errors and print stack trace of any errors that
 						// happened in creation of the ProtexFacade
 						logger.error(e1);
 						build.setResult(Result.UNSTABLE);
-						return true;
+						return;
 					}
 					final ProtexFullScanAction protexFullScanAction = getProtexFullScanAction(logger, build);
 					boolean fullScanRequired = false;
@@ -271,20 +274,20 @@ public class PostBuildProtexScan extends Recorder {
 
 					String localHostName = "";
 					try {
-						localHostName = build.getBuiltOn().getChannel().call(new GetHostName());
+						localHostName = workspace.getChannel().call(new GetHostName());
 					} catch (final IOException e) {
 						// logger.error("Problem getting the Local Host name : " + e.getMessage(), e);
 						// ignore the error, try to get the host name from the network interfaces
 					}
 					if (StringUtils.isBlank(localHostName)) {
 						try {
-							localHostName = build.getBuiltOn().getChannel().call(new GetHostNameFromNetworkInterfaces());
+							localHostName = workspace.getChannel().call(new GetHostNameFromNetworkInterfaces());
 						} catch (final IOException e) {
 							logger.error("Problem getting the Local Host name : " + e.getMessage(), e);
 						}
 					}
 
-					setJava(logger, build);
+					setJava(logger, build, workspace);
 
 					// These lines resolve any variables that the User may have used in the
 					// project names or in the source path
@@ -294,12 +297,12 @@ public class PostBuildProtexScan extends Recorder {
 					final String projectName = handleVariableReplacement(build, logger, variables, getProtexPostProjectName());
 					final String templateName = handleVariableReplacement(build, logger, variables, getProtexPostTemplateProjectName());
 					String sourcePath = handleVariableReplacement(build, logger, variables, getProtexPostProjectSourcePath());
-					printConfiguration(build, localHostName, currentServer, projectName, getProtexScanMemory(), sourcePath, protexFullScanAction, logger);
+					printConfiguration(build, workspace, localHostName, currentServer, projectName, getProtexScanMemory(), sourcePath, protexFullScanAction, logger);
 
 					build.addAction(new ProtexVariableContributorAction(currentServer.getProtexPostServerUrl(), projectName, templateName, sourcePath));
 
 					if (!build.getResult().equals(Result.SUCCESS)) {
-						return true;
+						return;
 					}
 
 					// Creates the Project during the build
@@ -312,11 +315,11 @@ public class PostBuildProtexScan extends Recorder {
 					// Check if the sourcepath is empty, if it is scan the whole workspace
 					// otherwise the path provided should be a sub directory in the workspace
 					try {
-						sourcePath = validateSourcePath(build, build.getBuiltOn().getChannel(), logger, sourcePath);
+						sourcePath = validateSourcePath(build, workspace, workspace.getChannel(), logger, sourcePath);
 					} catch (final ProtexValidationException e) {
 						e.printSmallStackTrace(logger);
 						build.setResult(Result.UNSTABLE);
-						return true;
+						return;
 					}
 
 					// Phone-Home
@@ -339,7 +342,7 @@ public class PostBuildProtexScan extends Recorder {
 					if (projectId == null) {
 						logger.error("The project Id was returned as null");
 						build.setResult(Result.UNSTABLE);
-						return true;
+						return;
 					}
 					facade.protexPrepScanProject(projectId, localHostName, sourcePath);
 
@@ -360,12 +363,12 @@ public class PostBuildProtexScan extends Recorder {
 
 					scanner.setForceScan(fullScanRequired);
 
-					final File logDirectory = new File(build.getWorkspace().getRemote(), "BDSToolLog");
+					final File logDirectory = new File(workspace.getRemote(), "BDSToolLog");
 					scanner.setLogDirectory(logDirectory);
 					scanner.setProtexScanMemory(getProtexScanMemory());
 
 					// Will run scan on master or remote node
-					if (build.getBuiltOn().getChannel().call(scanner)) {
+					if (workspace.getChannel().call(scanner)) {
 						// check the build result if successful reset the full scan action to
 						// prevent running a full scan.
 						if (protexFullScanAction != null && fullScanRequired == true) {
@@ -377,7 +380,7 @@ public class PostBuildProtexScan extends Recorder {
 
 						if (!generateProtexReport(build, logger, facade, projectId, getProtexReportTemplate())) {
 							build.setResult(Result.UNSTABLE);
-							return true;
+							return;
 						}
 					} else {
 						logger.error("Protex Scan did not run.");
@@ -385,12 +388,12 @@ public class PostBuildProtexScan extends Recorder {
 				} else {
 					logger.error("This Protex scan was not configured correctly. Missing required fields!");
 					build.setResult(Result.UNSTABLE);
-					return true;
+					return;
 				}
 			} catch (final ServerConnectionException e) {
 				logger.error(e.getMessage(), e);
 				build.setResult(Result.UNSTABLE);
-				return true;
+				return;
 			} catch (final ProtexFacadeException e) {
 				if (e.getSdkFaultErrorCode() != null) {
 					logger.error("SdkFault ErrorCode : " + e.getSdkFaultErrorCode().toString());
@@ -400,15 +403,15 @@ public class PostBuildProtexScan extends Recorder {
 				}
 				logger.error(e.getMessage(), e);
 				build.setResult(Result.UNSTABLE);
-				return true;
+				return;
 			} catch (final ServerConfigException e) {
 				logger.error(e.getMessage(), e);
 				build.setResult(Result.UNSTABLE);
-				return true;
+				return;
 			} catch (final Exception e) {
 				logger.error(e.getMessage(), e);
 				build.setResult(Result.UNSTABLE);
-				return true;
+				return;
 			} finally {
 				if (changed) {
 					Thread.currentThread().setContextClassLoader(
@@ -421,10 +424,10 @@ public class PostBuildProtexScan extends Recorder {
 
 		logger.info("Finished running Protex Post Build Step.");
 		build.setResult(result);
-		return true;
+		// return;
 	}
 
-	public void printConfiguration(final AbstractBuild<?, ?> build, final String localHost, final ProtexServerInfo currentServer,
+	public void printConfiguration(final Run<?, ?> build, final FilePath workspace, final String localHost, final ProtexServerInfo currentServer,
 			final String projectName, final Double scanMemory, final String sourcePath, final ProtexFullScanAction protexFullScanAction, final ProtexJenkinsLogger logger)
 					throws IOException,
 					InterruptedException {
@@ -440,16 +443,9 @@ public class PostBuildProtexScan extends Recorder {
 		logger.info(
 				"-> Using Build Number : " + build.getNumber());
 
-		if (build.getWorkspace() == null) {
-			// if the build workspace is null then the there might be a custom workspace set
-			logger.info(
+		logger.info(
 					"-> Using Build Workspace Path : "
-							+ build.getProject().getCustomWorkspace());
-		} else {
-			logger.info(
-					"-> Using Build Workspace Path : "
-							+ build.getWorkspace().getRemote());
-		}
+							+ workspace);
 		logger.info(
 				"-> Using Protex Project Name : " + projectName);
 		logger.info(
@@ -491,7 +487,7 @@ public class PostBuildProtexScan extends Recorder {
 	 * @param reportTemplate
 	 * @return
 	 */
-	public boolean generateProtexReport(final AbstractBuild<?, ?> build, final IntLogger logger, final ProtexFacade facade, final String projectId, final String reportTemplate) {
+	public boolean generateProtexReport(final Run<?, ?> build, final IntLogger logger, final ProtexFacade facade, final String projectId, final String reportTemplate) {
 		if (StringUtils.isBlank(reportTemplate)) {
 			return true;
 		}
@@ -548,7 +544,7 @@ public class PostBuildProtexScan extends Recorder {
 	 *            String to check for variables
 	 * @return the new Value with the variables replaced
 	 */
-	public String handleVariableReplacement(final AbstractBuild<?, ?> build, final ProtexJenkinsLogger logger, final Map<String, String> variables, final String value) {
+	public String handleVariableReplacement(final Run<?, ?> build, final ProtexJenkinsLogger logger, final Map<String, String> variables, final String value) {
 		if (value != null) {
 
 			final String newValue = Util.replaceMacro(value, variables);
@@ -639,8 +635,8 @@ public class PostBuildProtexScan extends Recorder {
 		return scanner;
 	}
 
-	private ProtexFullScanAction getProtexFullScanAction(final ProtexJenkinsLogger logger, final AbstractBuild<?, ?> build) {
-		final ProtexFullScanAction fullScanAction = build.getProject().getAction(ProtexFullScanAction.class);
+	private ProtexFullScanAction getProtexFullScanAction(final ProtexJenkinsLogger logger, final Run<?, ?> build) {
+		final ProtexFullScanAction fullScanAction = build.getParent().getAction(ProtexFullScanAction.class);
 		if (fullScanAction == null) {
 			logger.warn("No ProtexFullScanAction found for this Project.");
 		}
@@ -651,7 +647,7 @@ public class PostBuildProtexScan extends Recorder {
 	 * Sets the Java Home that is to be used for running the Shell script
 	 *
 	 * @param build
-	 *            AbstractBuild<?, ?>
+	 *            Run<?, ?>
 	 * @param listener
 	 *            BuildListener
 	 * @throws IOException
@@ -659,11 +655,11 @@ public class PostBuildProtexScan extends Recorder {
 	 * @throws ProtexValidationException
 	 * @throws HubConfigurationException
 	 */
-	private void setJava(final ProtexJenkinsLogger logger, final AbstractBuild<?, ?> build) throws IOException, InterruptedException, ProtexValidationException {
+	private void setJava(final ProtexJenkinsLogger logger, final Run<?, ?> build, FilePath workspace) throws IOException, InterruptedException, ProtexValidationException {
 		final EnvVars envVars = build.getEnvironment(logger.getJenkinsListener());
 		JDK javaHomeTemp = null;
-		if (StringUtils.isEmpty(build.getBuiltOn().getNodeName())) {
-			logger.info("Getting Jdk on master  : " + build.getBuiltOn().getNodeName());
+		if (StringUtils.isEmpty(workspace.toComputer().getName())) {
+			logger.info("Getting Jdk on master  : " + workspace.toComputer().getName());
 			// Empty node name indicates master
 			final String byteCodeVersion = System.getProperty("java.class.version");
 			final Double majorVersion = Double.valueOf(byteCodeVersion);
@@ -682,15 +678,16 @@ public class PostBuildProtexScan extends Recorder {
 				final String javaHome = System.getProperty("java.home");
 				javaHomeTemp = new JDK("Java running master agent", javaHome);
 			} else {
-				javaHomeTemp = build.getProject().getJDK();
+				// javaHomeTemp = build.getParent().getJDK();
+				javaHomeTemp = Jenkins.getInstance().getJDK(javaName);
 			}
 		} else {
-			logger.info("Getting Jdk on node  : " + build.getBuiltOn().getNodeName());
-			final String byteCodeVersion = build.getBuiltOn().getChannel().call(new
+			logger.info("Getting Jdk on node  : " + workspace.toComputer().getName());
+			final String byteCodeVersion = workspace.getChannel().call(new
 					GetSystemProperty("java.class.version"));
 			final Double majorVersion = Double.valueOf(byteCodeVersion);
 
-			final String arch = build.getBuiltOn().getChannel().call(new
+			final String arch = workspace.getChannel().call(new
 					GetSystemProperty("os.arch"));
 
 			final boolean unsupportedArch = arch.endsWith("86");
@@ -702,10 +699,11 @@ public class PostBuildProtexScan extends Recorder {
 				// Java 7 bytecode
 				// If the slave is running Java 7 or higher we use that Java
 				// instead of the one the User selected in the job configuration
-				final String javaHome = build.getBuiltOn().getChannel().call(new GetSystemProperty("java.home"));
+				final String javaHome = workspace.getChannel().call(new GetSystemProperty("java.home"));
 				javaHomeTemp = new JDK("Java running slave agent", javaHome);
 			} else {
-				javaHomeTemp = build.getProject().getJDK().forNode(build.getBuiltOn(), logger.getJenkinsListener());
+				// javaHomeTemp = build.getParent().getJDK().forNode(workspace.toComputer().getNode(), logger.getJenkinsListener());
+				javaHomeTemp = Jenkins.getInstance().getJDK(javaName).forNode(workspace.toComputer().getNode(), logger.getJenkinsListener());
 			}
 		}
 		if (javaHomeTemp != null && javaHomeTemp.getHome() != null) {
@@ -722,9 +720,9 @@ public class PostBuildProtexScan extends Recorder {
 		}
 		setJavaName(javaHomeTemp.getName());
 
-		final String osName = build.getBuiltOn().getChannel().call(new GetSystemProperty("os.name"));
+		final String osName = workspace.getChannel().call(new GetSystemProperty("os.name"));
 
-		final FilePath javaHome = new FilePath(build.getBuiltOn().getChannel(), javaHomeTemp.getHome());
+		final FilePath javaHome = new FilePath(workspace.getChannel(), javaHomeTemp.getHome());
 		FilePath javaExec = new FilePath(javaHome, "bin");
 
 		if (osName.toLowerCase().contains("windows")) {
@@ -784,17 +782,19 @@ public class PostBuildProtexScan extends Recorder {
 	 * @throws InterruptedException
 	 * @throws ProtexValidationException
 	 */
-	public String validateSourcePath(final AbstractBuild<?, ?> build, final VirtualChannel channel, final ProtexJenkinsLogger logger,
+	public String validateSourcePath(final Run<?, ?> build, final FilePath workspace, final VirtualChannel channel, final ProtexJenkinsLogger logger,
 			final String sourcePath) throws IOException, InterruptedException, ProtexValidationException {
-		FilePath workspace = null;
+		// FilePath workspace = null;
 		String target = "";
+		/*
 		if (build.getWorkspace() == null) {
 			// May have a custom workspace set
-			workspace = new FilePath(channel, build.getProject().getCustomWorkspace());
+			workspace = new FilePath(channel, build.getParent().getCustomWorkspace());
 
 		} else {
 			workspace = build.getWorkspace();
 		}
+		*/
 
 		final String workspacePath = channel.call(new GetCanonicalPath(new File(workspace.getRemote())));
 

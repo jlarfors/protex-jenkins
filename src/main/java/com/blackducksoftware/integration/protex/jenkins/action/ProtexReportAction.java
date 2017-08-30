@@ -22,24 +22,25 @@
 package com.blackducksoftware.integration.protex.jenkins.action;
 
 import hudson.model.Action;
-import hudson.model.AbstractBuild;
+import hudson.model.Run;
+import hudson.model.Run;
 
 import com.blackducksoftware.integration.protex.jenkins.Messages;
 
 public class ProtexReportAction implements Action {
 
-    private final AbstractBuild<?, ?> build;
+    private final Run<?, ?> build;
 
     // All persisted fields must be serializable
     // Storing the html report as a String , Good or Bad idea? Suggestions?
     private final String reportHtmlContent;
 
-    public ProtexReportAction(AbstractBuild<?, ?> build, String reportHtmlContent) {
+    public ProtexReportAction(Run<?, ?> build, String reportHtmlContent) {
         this.build = build;
         this.reportHtmlContent = reportHtmlContent;
     }
 
-    public AbstractBuild<?, ?> getBuild() {
+    public Run<?, ?> getBuild() {
         return build;
     }
 
